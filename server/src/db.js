@@ -65,4 +65,27 @@ if (planCount === 0) {
     { id: "glo-3", network: "glo", label: "7GB", validity: "30 days", cost: 1400, price: 1650, variation_code: "glo-data-1650" },
     { id: "airtel-1", network: "airtel", label: "1GB", validity: "30 days", cost: 255, price: 310, variation_code: "airtel-data-310" },
     { id: "airtel-2", network: "airtel", label: "4GB", validity: "30 days", cost: 950, price: 1100, variation_code: "airtel-data-1100" },
-    { id: "airtel-3", network: "airtel", label: "10GB", validity: "30 days", cost: 2250, price: 2550, variation_code: "airtel-data-
+    { id: "airtel-3", network: "airtel", label: "10GB", validity: "30 days", cost: 2250, price: 2550, variation_code: "airtel-data-2550" },
+    { id: "9mobile-1", network: "9mobile", label: "1.5GB", validity: "30 days", cost: 270, price: 330, variation_code: "etisalat-data-330" },
+    { id: "9mobile-2", network: "9mobile", label: "4.5GB", validity: "30 days", cost: 900, price: 1050, variation_code: "etisalat-data-1050" },
+  ];
+  const insertMany = db.transaction((rows) => rows.forEach((r) => insert.run(r)));
+  insertMany(seedPlans);
+  console.log(`Seeded ${seedPlans.length} plans.`);
+}
+
+// Seed default admin on first run
+function ensureAdmin() {
+  const email = process.env.ADMIN_EMAIL || "admin@quancy6.app";
+  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+  if (existing) return;
+  const hash = bcrypt.hashSync(process.env.ADMIN_PASSWORD || "change-this-password", 10);
+  db.prepare(`
+    INSERT INTO users (name, email, phone, password_hash, role, wallet_balance)
+    VALUES (?, ?, ?, ?, 'admin', 0)
+  `).run(process.env.ADMIN_NAME || "Admin", email, process.env.ADMIN_PHONE || "08000000000", hash);
+  console.log(`Created admin account: ${email}`);
+}
+ensureAdmin();
+
+module.exports = db;
