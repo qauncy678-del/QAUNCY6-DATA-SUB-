@@ -11,7 +11,7 @@ let state = {
   booting: true,
   token: localStorage.getItem("quancy6_token") || null,
   user: null,
-  authMode: "login",
+  authMode: "login", // "login" | "register"
   authError: null,
   view: "user",
   activeNetwork: "mtn",
@@ -26,6 +26,7 @@ let state = {
 
 let toastTimer = null;
 
+// ---------- Helpers ----------
 const naira = (n) => `₦${Number(n).toLocaleString("en-NG", { minimumFractionDigits: 2 })}`;
 const netOf = (id) => NETWORKS.find((n) => n.id === id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
@@ -67,6 +68,7 @@ function showToast(msg, tone = "ok") {
   toastTimer = setTimeout(() => { state.toast = null; render(); }, 2600);
 }
 
+// ---------- API ----------
 async function api(path, { method = "GET", body, auth = true } = {}) {
   const headers = { "Content-Type": "application/json" };
   if (auth && state.token) headers.Authorization = `Bearer ${state.token}`;
@@ -76,7 +78,7 @@ async function api(path, { method = "GET", body, auth = true } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
   let data = null;
-  try { data = await res.json(); } catch (_) { }
+  try { data = await res.json(); } catch (_) { /* no body */ }
   if (!res.ok) {
     const message = data?.error || `Request failed (${res.status})`;
     const err = new Error(message);
@@ -117,6 +119,7 @@ async function boot() {
   render();
 }
 
+// ---------- Auth actions ----------
 async function handleAuthSubmit(mode, fields) {
   state.authError = null;
   try {
@@ -147,6 +150,7 @@ function logout() {
   render();
 }
 
+// ---------- App actions ----------
 async function buyPlan(planId) {
   const plan = state.plans.find((p) => p.id === planId);
   const phone = state.purchasePhone.trim() || state.user.phone;
@@ -197,3 +201,394 @@ function startEdit(id) {
   state.editDraft = { cost: p.cost, price: p.price };
   render();
 }
+
+function cancelEdit() {
+  state.editingId = null;
+  render();
+}
+
+async function saveEdit(id) {
+  try {
+    const data = await api(`/plans/${id}`, {
+      method: "PUT",
+      body: { cost: Number(state.editDraft.cost), price: Number(state.editDraft.price) },
+    });
+    state.plans = state.plans.map((p) => (p.id === id ? data.plan : p));
+    state.editingId = null;
+    showToast("Plan updated", "ok");
+  } catch (err) {
+    showToast(err.message, "fail");
+  }
+  render();
+}
+
+async function deletePlan(id) {
+  try {
+    await api(`/plans/${id}`, { method: "DELETE" });
+    state.plans = state.plans.filter((p) => p.id !== id);
+    showToast("Plan removed", "ok");
+  } catch (err) {
+    showToast(err.message, "fail");
+  }
+  render();
+}
+
+async function addPlan() {
+  const np = state.newPlan;
+  if (!np.label || !np.cost || !np.price) {
+    showToast("Fill in plan size, cost and selling price", "fail");
+    return;
+  }
+  try {
+    const data = await api("/plans", {
+      method: "POST",
+      body: { network: np.network, label: np.label, validity: np.validity, cost: Number(np.cost), price: Number(np.price) },
+    });
+    state.plans.push(data.plan);
+    state.newPlan = { network: np.network, label: "", validity: "30 days", cost: "", price: "" };
+    showToast("Plan added", "ok");
+  } catch (err) {
+    showToast(err.message, "fail");
+  }
+  render();
+}
+
+// ---------- Render ----------
+function render() {
+  const root = document.getElementById("app");
+
+  if (state.booting) {
+    root.innerHTML = `<div class="loading-note">Loading QUANCY6…</div>`;
+    return;
+  }
+  if (!state.token || !state.user) {
+    root.innerHTML = renderAuthScreen();
+    bindAuthEvents();
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="shell">
+      <div class="header">
+        <div class="brand">${signalBars(4)} QUANCY6</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="view-toggle">
+            <button data-action="set-view" data-view="user" class="${state.view === "user" ? "active" : ""}">${icon("user", 13)} You</button>
+            ${state.user.role === "admin" ? `<button data-action="set-view" data-view="admin" class="${state.view === "admin" ? "active" : ""}">${icon("shield", 13)} Admin</button>` : ""}
+          </div>
+          <button class="logout-btn" data-action="logout">${icon("logout", 12)}</button>
+        </div>
+      </div>
+
+      ${state.toast ? `<div class="toast ${state.toast.tone}">${esc(state.toast.msg)}</div>` : ""}
+
+      ${state.view === "admin" && state.user.role === "admin" ? renderAdminView() : renderUserView()}
+    </div>
+  `;
+  bindEvents();
+}
+
+function renderAuthScreen() {
+  const mode = state.authMode;
+  return `
+    <div class="auth-shell">
+      <div class="auth-card">
+        <div class="auth-brand">${signalBars(4)} QUANCY6</div>
+        <div class="auth-title">${mode === "login" ? "Log in" : "Create your account"}</div>
+        <div class="auth-sub">${mode === "login" ? "Welcome back — check your wallet and grab a plan." : "Set up a wallet to start buying data."}</div>
+        ${state.authError ? `<div class="auth-error">${esc(state.authError)}</div>` : ""}
+        <form id="auth-form">
+          ${mode === "register" ? `
+            <div class="auth-field"><label>Full name</label><input type="text" name="name" required /></div>
+            <div class="auth-field"><label>Phone number</label><input type="text" name="phone" placeholder="080..." /></div>
+          ` : ""}
+          <div class="auth-field"><label>Email</label><input type="email" name="email" required /></div>
+          <div class="auth-field"><label>Password</label><input type="password" name="password" required minlength="6" /></div>
+          <button type="submit" class="auth-submit">${mode === "login" ? "Log in" : "Create account"}</button>
+        </form>
+        <div class="auth-switch">
+          ${mode === "login" ? `New here? <button data-action="switch-auth" data-mode="register">Create an account</button>` : `Already have an account? <button data-action="switch-auth" data-mode="login">Log in</button>`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderUserView() {
+  const balance = state.user.wallet_balance;
+  const activeNet = netOf(state.activeNetwork);
+  const level = balance > 5000 ? 4 : balance > 1500 ? 3 : balance > 300 ? 2 : 1;
+  const visiblePlans = state.plans.filter((p) => p.network === state.activeNetwork);
+
+  return `
+    <div class="wallet-card">
+      <div class="wifi-bg">${icon("wifi", 140)}</div>
+      <div class="wallet-label">${icon("wallet", 14)} WALLET BALANCE</div>
+      <div class="wallet-amount">${naira(balance)} ${signalBars(level)}</div>
+      <div class="topup-row">
+        ${[500, 1000, 2000, 5000].map((amt) => `
+          <button class="topup-chip" data-action="topup" data-amount="${amt}">${icon("plus", 11)} ${naira(amt)}</button>
+        `).join("")}
+      </div>
+    </div>
+
+    <div class="auth-field" style="margin-bottom:16px">
+      <label>Phone to receive data</label>
+      <input type="text" id="purchase-phone" placeholder="${esc(state.user.phone || "080...")}" value="${esc(state.purchasePhone)}" />
+    </div>
+
+    <div class="network-tabs">
+      ${NETWORKS.map((n) => `
+        <button class="network-tab" data-action="set-network" data-network="${n.id}"
+          style="${n.id === state.activeNetwork ? `border-color:${n.color};background:${n.color}1A;color:${n.color};` : ""}">
+          <span class="dot" style="background:${n.color}"></span>${n.name}
+        </button>
+      `).join("")}
+    </div>
+
+    <div class="plan-grid">
+      ${visiblePlans.length === 0 ? `<div class="empty-note">No plans on this network yet.</div>` : visiblePlans.map((p) => `
+        <div class="plan-card">
+          <div>
+            <div class="plan-size">${esc(p.label)}</div>
+            <div class="plan-validity">${esc(p.validity)}</div>
+          </div>
+          <div class="plan-price" style="color:${activeNet.color}">${naira(p.price)}</div>
+          <button class="buy-btn" data-action="buy" data-id="${p.id}"
+            style="background:${activeNet.color};color:${activeNet.dark ? "#0F1B2B" : "#fff"}">
+            Buy ${icon("arrow", 13)}
+          </button>
+        </div>
+      `).join("")}
+    </div>
+
+    <div class="section-label">${icon("history", 14)} RECENT TRANSACTIONS</div>
+    <div class="tx-list">
+      ${state.transactions.slice(0, 8).map((tx) => {
+        const net = netOf(tx.network);
+        return `
+          <div class="tx-row">
+            <div class="tx-left">
+              <span class="dot" style="width:8px;height:8px;border-radius:50%;background:${net.color};flex-shrink:0"></span>
+              <div style="min-width:0">
+                <div class="tx-title">${net.name} · ${esc(tx.label)}</div>
+                <div class="tx-meta">${tx.id} · ${new Date(tx.created_at).toLocaleString()}</div>
+              </div>
+            </div>
+            <div class="tx-right">
+              <div class="tx-amount">${naira(tx.amount)}</div>
+              ${statusPill(tx.status)}
+            </div>
+          </div>
+        `;
+      }).join("")}
+      ${state.transactions.length === 0 ? `<div class="empty-note">No transactions yet.</div>` : ""}
+    </div>
+  `;
+}
+
+function renderAdminView() {
+  return `
+    <div>
+      <div class="admin-title">Manage plans</div>
+      <div class="admin-sub">Adjust cost and selling price per network.</div>
+      ${state.plans.map((p) => {
+        const net = netOf(p.network);
+        const editing = state.editingId === p.id;
+        const margin = p.price - p.cost;
+        return `
+          <div class="plan-admin-row">
+            <div class="plan-admin-top">
+              <div class="plan-admin-info">
+                <span class="dot" style="width:8px;height:8px;border-radius:50%;background:${net.color}"></span>
+                <div>
+                  <div class="plan-admin-name">${net.name} · ${esc(p.label)}</div>
+                  <div class="plan-admin-validity">${esc(p.validity)}</div>
+                </div>
+              </div>
+              <div class="plan-admin-actions">
+                ${editing ? `
+                  <button class="icon-btn" data-action="save-edit" data-id="${p.id}" style="border-color:#3DDC9755;background:#3DDC9715;color:#3DDC97">${icon("check", 14)}</button>
+                  <button class="icon-btn" data-action="cancel-edit" style="border-color:#8792A355;background:#8792A315;color:#8792A3">${icon("x", 14)}</button>
+                ` : `
+                  <button class="icon-btn" data-action="start-edit" data-id="${p.id}" style="border-color:#FFB02055;background:#FFB02015;color:#FFB020">${icon("pencil", 13)}</button>
+                  <button class="icon-btn" data-action="delete-plan" data-id="${p.id}" style="border-color:#FF547055;background:#FF547015;color:#FF5470">${icon("trash", 13)}</button>
+                `}
+              </div>
+            </div>
+            ${editing ? `
+              <div class="plan-edit-row">
+                <label class="field-wrap">
+                  <span class="field-label">Cost</span>
+                  <input type="number" data-field="cost" value="${p.cost}" />
+                </label>
+                <label class="field-wrap">
+                  <span class="field-label">Sell</span>
+                  <input type="number" data-field="price" value="${p.price}" />
+                </label>
+              </div>
+            ` : `
+              <div class="plan-admin-stats">
+                <span style="color:#8792A3">Cost ${naira(p.cost)}</span>
+                <span style="color:#8792A3">Sell ${naira(p.price)}</span>
+                <span style="color:${margin >= 0 ? "#3DDC97" : "#FF5470"}">Margin ${naira(margin)}</span>
+              </div>
+            `}
+          </div>
+        `;
+      }).join("")}
+    </div>
+
+    <div class="add-plan-box">
+      <div class="add-plan-title">Add a plan</div>
+      <div class="add-plan-row">
+        <select id="np-network">
+          ${NETWORKS.map((n) => `<option value="${n.id}" ${n.id === state.newPlan.network ? "selected" : ""}>${n.name}</option>`).join("")}
+        </select>
+        <input type="text" id="np-label" placeholder="Size e.g. 3GB" value="${esc(state.newPlan.label)}" />
+        <input type="text" id="np-validity" placeholder="Validity" value="${esc(state.newPlan.validity)}" />
+      </div>
+      <div class="add-plan-row">
+        <input type="number" id="np-cost" placeholder="Cost price" value="${esc(state.newPlan.cost)}" />
+        <input type="number" id="np-price" placeholder="Selling price" value="${esc(state.newPlan.price)}" />
+        <button class="add-btn" data-action="add-plan">Add</button>
+      </div>
+    </div>
+
+    <div class="section-label">${icon("history", 14)} ALL TRANSACTIONS</div>
+    <div class="tx-list" id="admin-tx-list">
+      <div class="empty-note">Loading…</div>
+    </div>
+  `;
+}
+
+async function loadAdminTransactions() {
+  try {
+    const data = await api("/transactions/all");
+    const list = document.getElementById("admin-tx-list");
+    if (!list) return;
+    list.innerHTML = data.transactions.map((tx) => {
+      const net = netOf(tx.network);
+      return `
+        <div class="tx-row">
+          <div>
+            <div class="tx-title">${net.name} · ${esc(tx.label)}</div>
+            <div class="tx-meta">${tx.id} · ${esc(tx.user_email)} · ${new Date(tx.created_at).toLocaleString()}</div>
+          </div>
+          <div class="tx-right">
+            <div class="tx-amount">${naira(tx.amount)}</div>
+            ${statusPill(tx.status)}
+          </div>
+        </div>
+      `;
+    }).join("") || `<div class="empty-note">No transactions yet.</div>`;
+  } catch (err) {
+    showToast(err.message, "fail");
+  }
+}
+
+// ---------- Event binding ----------
+function bindAuthEvents() {
+  const root = document.getElementById("app");
+  root.querySelectorAll("[data-action='switch-auth']").forEach((el) => {
+    el.addEventListener("click", () => {
+      state.authMode = el.getAttribute("data-mode");
+      state.authError = null;
+      render();
+    });
+  });
+  const form = document.getElementById("auth-form");
+  if (form) {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      handleAuthSubmit(state.authMode, {
+        name: fd.get("name"),
+        email: fd.get("email"),
+        phone: fd.get("phone"),
+        password: fd.get("password"),
+      });
+    });
+  }
+}
+
+function bindEvents() {
+  const root = document.getElementById("app");
+
+  root.querySelectorAll("[data-action]").forEach((el) => {
+    const action = el.getAttribute("data-action");
+    el.addEventListener("click", () => {
+      switch (action) {
+        case "set-view":
+          state.view = el.getAttribute("data-view");
+          render();
+          if (state.view === "admin") loadAdminTransactions();
+          break;
+        case "set-network":
+          state.activeNetwork = el.getAttribute("data-network");
+          render();
+          break;
+        case "topup":
+          topUp(Number(el.getAttribute("data-amount")));
+          break;
+        case "buy":
+          buyPlan(el.getAttribute("data-id"));
+          break;
+        case "start-edit":
+          startEdit(el.getAttribute("data-id"));
+          break;
+        case "save-edit":
+          syncEditDraft();
+          saveEdit(el.getAttribute("data-id"));
+          break;
+        case "cancel-edit":
+          cancelEdit();
+          break;
+        case "delete-plan":
+          deletePlan(el.getAttribute("data-id"));
+          break;
+        case "add-plan":
+          syncNewPlanFields();
+          addPlan();
+          break;
+        case "logout":
+          logout();
+          break;
+      }
+    });
+  });
+
+  const phoneInput = document.getElementById("purchase-phone");
+  if (phoneInput) phoneInput.addEventListener("input", () => { state.purchasePhone = phoneInput.value; });
+
+  root.querySelectorAll('[data-field]').forEach((inp) => {
+    inp.addEventListener("input", () => {
+      state.editDraft[inp.getAttribute("data-field")] = inp.value;
+    });
+  });
+
+  const map = { "np-network": "network", "np-label": "label", "np-validity": "validity", "np-cost": "cost", "np-price": "price" };
+  Object.keys(map).forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", () => { state.newPlan[map[id]] = el.value; });
+  });
+
+  if (state.view === "admin" && state.user.role === "admin") loadAdminTransactions();
+}
+
+function syncEditDraft() {
+  document.querySelectorAll('[data-field]').forEach((inp) => {
+    state.editDraft[inp.getAttribute("data-field")] = inp.value;
+  });
+}
+
+function syncNewPlanFields() {
+  const map = { "np-network": "network", "np-label": "label", "np-validity": "validity", "np-cost": "cost", "np-price": "price" };
+  Object.keys(map).forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) state.newPlan[map[id]] = el.value;
+  });
+}
+
+// ---------- Init ----------
+boot();
